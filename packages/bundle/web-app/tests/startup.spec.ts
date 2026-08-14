@@ -11,7 +11,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import { internals, provideCmdline } from '@deepseek-ai/dsh-cmdline'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply, WEB_STARTUP_SERVICE, type WebStartupValues } from '../src/startup.ts'
 
 /** What one fixture boot observed. */
@@ -27,6 +27,7 @@ afterEach(async () => {
   for (const dispose of disposers.splice(0)) await dispose()
   internals.stdout = process.stdout
   internals.stderr = process.stderr
+  vi.unstubAllEnvs()
 })
 
 /**
@@ -109,6 +110,7 @@ describe('web command-line provider', () => {
   })
 
   it('leaves deployment values to each consumer when flags omit them', async () => {
+    delete process.env.PORT
     const { values, observed } = await bootProvider([])
     expect(values).toEqual({ trustedHosts: [], trustedOrigins: [], dev: false })
     expect(observed.readerConfig).toEqual({
@@ -118,6 +120,42 @@ describe('web command-line provider', () => {
       trustedOrigins: [],
       dev: false,
     })
+  })
+
+  it('uses $PORT as the default port when --port is absent', async () => {
+    vi.stubEnv('PORT', '9090')
+    const { values, observed } = await bootProvider([])
+    expect(values).toEqual({ port: 9090, trustedHosts: [], trustedOrigins: [], dev: false })
+    expect(observed.readerConfig).toEqual({
+      host: '127.0.0.1',
+      port: 9090,
+      trustedHosts: [],
+      trustedOrigins: [],
+      dev: false,
+    })
+    expect(observed.exits).toEqual([])
+  })
+
+  it('lets --port override $PORT', async () => {
+    vi.stubEnv('PORT', '9090')
+    const { values, observed } = await bootProvider(['--port', '8080'])
+    expect(values).toEqual({
+      port: 8080,
+      trustedHosts: [],
+      trustedOrigins: [],
+      dev: false,
+    })
+    expect(observed.readerConfig).toMatchObject({ port: 8080 })
+    expect(observed.exits).toEqual([])
+  })
+
+  it('rejects a non-numeric $PORT before the consumer activates', async () => {
+    vi.stubEnv('PORT', 'tcp://0.0.0.0:9090')
+    const { values, observed } = await bootProvider([])
+    expect(observed.out).toContain('$PORT must be a number')
+    expect(values).toBeUndefined()
+    expect(observed.readerConfig).toBeUndefined()
+    expect(observed.exits).toEqual([1])
   })
 
   it('prints its own help and leaves the consumer pending', async () => {

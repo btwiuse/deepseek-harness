@@ -13,6 +13,9 @@ import { parseCmdline } from '@deepseek-ai/dsh-cmdline'
 /** Stable Cordis plugin name. */
 export const name = 'web-startup'
 
+/** Environment variable naming the default listen port when `--port` is absent. */
+const PORT_ENV = 'PORT'
+
 /** Services required before the flags can be resolved. */
 export const inject = ['cmdlineArgs']
 
@@ -52,24 +55,25 @@ function webCommand(): Command {
     .description('Serve the DeepSeek Harness browser UI.')
     .helpOption('-h, --help', 'show this help')
     .option('--host <host>', 'bind host')
-    .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
+    .option('--port <port>', 'listen port; falls back to $PORT, then 3080; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
     .option('--trusted-origin <origin...>', 'extra absolute origin the /api Origin fence accepts (scheme://host[:port]; repeatable)')
     .option('--dev', 'disable every /api browser-trust fence (Host, Origin, privileged loopback pin); development only, never expose it')
     .addHelpText('after', `
 Examples:
-  dsh --profile web                          serve on the composed host and port
+  dsh --profile web                          serve on $PORT or 3080
   dsh --profile web --port 8080              serve on another port
   dsh --profile web --trusted-origin https://app.example --trusted-host app.example
                                              serve behind a reverse tunnel fronting app.example
-  dsh --profile web --dev --port 8090        serve with all /api browser-trust fences off (local development)
+  dsh --profile web --dev                    serve with all /api browser-trust fences off (local development)
 `)
 }
 
 /**
  * Parse and provide the Web invocation as an ordinary Cordis service. The
  * command's action publishes the flags this invocation named; `--host 0.0.0.0`
- * or a non-numeric `--port` is a usage error, so on rejection (and on `--help`)
+ * or a non-numeric `--port` (or `$PORT`, which supplies the default when the
+ * flag is absent) is a usage error, so on rejection (and on `--help`)
  * nothing is provided.
  * @param ctx - plugin context carrying the command line.
  */
@@ -83,9 +87,18 @@ export function apply(ctx: Context): void {
     if (options.port !== undefined && !/^\d+$/.test(options.port)) {
       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
     }
+    // The platform convention: a containerized deployment supplies $PORT and
+    // never a flag, so an absent --port falls back to it; the webserver row's
+    // 3080 remains the final default when neither names a port. Validated with
+    // the same digits-only rule as the flag, so a malformed $PORT fails loud
+    // instead of silently serving on an unreadable default.
+    const port = options.port ?? process.env[PORT_ENV]
+    if (port !== undefined && !/^\d+$/.test(port)) {
+      program.error(`error: $${PORT_ENV} must be a number, got ${JSON.stringify(port)}`)
+    }
     ctx.provide(WEB_STARTUP_SERVICE, {
       ...options.host !== undefined && { host: options.host },
-      ...options.port !== undefined && { port: Number(options.port) },
+      ...port !== undefined && { port: Number(port) },
       trustedHosts: options.trustedHost ?? [],
       trustedOrigins: options.trustedOrigin ?? [],
       dev: options.dev ?? false,
