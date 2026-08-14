@@ -27,7 +27,9 @@ RUN pnpm install --frozen-lockfile \
 RUN ln -s /app/apps/cli/lib/bin.js /usr/local/bin/dsh
 
 # Harness user data lives under the harness home (persist with a volume).
-ENV DSH_HOME=/app/.dsh
+ENV DSH_HOME=/mnt/.dsh
+
+WORKDIR /mnt
 
 # $PORT is the platform convention dsh web reads for its default listen port;
 # override at runtime: docker run -e PORT=9000 ...
