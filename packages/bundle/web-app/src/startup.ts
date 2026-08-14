@@ -27,6 +27,10 @@ export interface WebStartupValues {
   port?: number
   /** Explicit `--trusted-host` authorities, in argument order. */
   trustedHosts: string[]
+  /** Explicit `--trusted-origin` origins, in argument order. */
+  trustedOrigins: string[]
+  /** `--dev`: disable every /api browser-trust fence for this process. */
+  dev: boolean
 }
 
 /** The web flag family, as commander parsed it. */
@@ -34,6 +38,8 @@ interface WebOptions {
   host?: string
   port?: string
   trustedHost?: string[]
+  trustedOrigin?: string[]
+  dev?: boolean
 }
 
 /**
@@ -48,10 +54,15 @@ function webCommand(): Command {
     .option('--host <host>', 'bind host')
     .option('--port <port>', 'listen port; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
+    .option('--trusted-origin <origin...>', 'extra absolute origin the /api Origin fence accepts (scheme://host[:port]; repeatable)')
+    .option('--dev', 'disable every /api browser-trust fence (Host, Origin, privileged loopback pin); development only, never expose it')
     .addHelpText('after', `
 Examples:
   dsh --profile web                          serve on the composed host and port
   dsh --profile web --port 8080              serve on another port
+  dsh --profile web --trusted-origin https://app.example --trusted-host app.example
+                                             serve behind a reverse tunnel fronting app.example
+  dsh --profile web --dev --port 8090        serve with all /api browser-trust fences off (local development)
 `)
 }
 
@@ -76,6 +87,8 @@ export function apply(ctx: Context): void {
       ...options.host !== undefined && { host: options.host },
       ...options.port !== undefined && { port: Number(options.port) },
       trustedHosts: options.trustedHost ?? [],
+      trustedOrigins: options.trustedOrigin ?? [],
+      dev: options.dev ?? false,
     } satisfies WebStartupValues)
   })
   parseCmdline(ctx, program)

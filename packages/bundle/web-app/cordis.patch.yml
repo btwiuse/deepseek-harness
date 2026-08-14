@@ -134,6 +134,8 @@
         printUrl: true
         surfaceContext: true
         trustedHosts: !!js ctx.webStartup.trustedHosts
+        trustedOrigins: !!js ctx.webStartup.trustedOrigins ?? []
+        dev: !!js ctx.webStartup.dev ?? false
 
     # The client-plugin reload chain, always mounted: it is idle until a
     # rebuild watcher (pnpm run dev:web) actually rewrites client bundles. It
@@ -161,6 +163,13 @@
         # A deployment adding authorities keeps this expression and concatenates
         # its literals, for example: ['app.internal', ...ctx.webRuntime.trustedHosts].
         trustedHosts: !!js ctx.webRuntime.trustedHosts
+        # --trusted-origin extras: absolute origins whose browser requests may
+        # pass the Origin fence even when a reverse tunnel rewrites Host to
+        # loopback (the fence then binds Host but must not reject the page's
+        # real origin). Empty keeps the strict same-authority rule.
+        trustedOrigins: !!js ctx.webRuntime.trustedOrigins ?? []
+        # --dev: every /api browser-trust fence is disabled for this process.
+        dev: !!js ctx.webRuntime.dev ?? false
 
     - id: api-remotes
       name: '@deepseek-ai/dsh-api-remotes'

@@ -9,6 +9,11 @@
  * still be a rebound browser read and Host is the one header rebinding cannot
  * forge. Non-browser and remote clients pass the same fence via loopback,
  * deployment-derived LAN IP literals, or a declared `trustedHosts` authority.
+ * A reverse tunnel that rewrites Host to loopback passes the Host fence for
+ * any origin, so the Origin fence additionally requires the browser's origin
+ * to be same-authority as the Host unless the deployment declares the origin
+ * in `trustedOrigins` — the escape hatch for exactly that proxied serving
+ * shape, granted per absolute origin, never by hostname prefix.
  * Network reachability and authentication stay out of scope: binding policy
  * belongs to the webserver config, and this fence is not an auth layer.
  */
@@ -88,12 +93,68 @@ function isTrustedAuthority(hostUrl: URL, trustedHosts: readonly string[]): bool
 }
 
 /**
+ * Assert one configured `trustedOrigins` entry is a canonical absolute origin
+ * in the exact form a browser Origin header carries — `scheme://host[:port]`
+ * with an explicit http or https scheme and nothing else. Anything WHATWG
+ * parsing would silently rewrite or drop is refused as a typo that must fail
+ * the load loudly instead of authorizing the wrong grant: a path, query, or
+ * fragment (the browser never sends one), userinfo (which would authorize the
+ * embedded origin), a missing scheme, a non-http(s) scheme, and a non-canonical
+ * spelling such as an uppercase host or a redundant default port (the wire form
+ * is lowercase with default ports elided, so a match that required rewriting
+ * would never fire — or worse, would fire for a different authority).
+ * @param entry - the configured value, verbatim.
+ */
+export function assertTrustedOrigin(entry: string): void {
+  let url: URL
+  try {
+    url = new URL(entry)
+  } catch {
+    throw new Error(
+      `client-connection: trustedOrigins entry ${JSON.stringify(entry)} is not an absolute http(s) origin`
+      + ' (scheme://host[:port])',
+    )
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:')
+    || url.origin !== entry
+    || url.username !== '' || url.password !== '') {
+    throw new Error(
+      `client-connection: trustedOrigins entry ${JSON.stringify(entry)} is not an absolute http(s) origin`
+      + ' (scheme://host[:port])',
+    )
+  }
+}
+
+/**
+ * Whether a browser Origin header matches a `trustedOrigins` entry. Both sides
+ * normalize through WHATWG `URL.origin`, so scheme, host case, and a redundant
+ * default port never decide trust; the entries themselves were asserted
+ * canonical at load, so this is a plain includes over the normalized value.
+ * @param origin - the request's raw Origin header value.
+ * @param trustedOrigins - deployment origins whose proxied browser requests pass the Origin fence.
+ * @returns true when the origin is declared, false on any unparsable value.
+ */
+function isTrustedOrigin(origin: string, trustedOrigins: readonly string[]): boolean {
+  if (trustedOrigins.length === 0) return false
+  try {
+    return trustedOrigins.includes(new URL(origin).origin)
+  } catch {
+    return false
+  }
+}
+
+/**
  * Decide whether one /api request may reach the RPC bridge.
  * @param request - Node HTTP or Fetch request facts (headers).
  * @param trustedHosts - non-loopback authorities this deployment serves: exact `host:port`, or port-less `host` matching any port.
- * @returns true when the Host is ours (loopback or trusted) and any attached browser markers are same-origin.
+ * @param trustedOrigins - absolute origins whose browser requests may pass the Origin fence (empty keeps the strict same-authority rule).
+ * @returns true when the Host is ours (loopback or trusted) and any attached browser markers are same-origin or declared.
  */
-export function isTrustedApiRequest(request: ApiTrustRequest, trustedHosts: readonly string[]): boolean {
+export function isTrustedApiRequest(
+  request: ApiTrustRequest,
+  trustedHosts: readonly string[],
+  trustedOrigins: readonly string[] = [],
+): boolean {
   // Host fence (DNS-rebinding defense), applied to every request: the browser
   // fills Host from the URL it believes it is talking to, so a rebound page
   // carries the attacker's domain here even though the socket lands on this
@@ -110,11 +171,13 @@ export function isTrustedApiRequest(request: ApiTrustRequest, trustedHosts: read
   // every fetch; an explicit cross-site marker is refused regardless of Origin.
   if (header(request.headers, 'sec-fetch-site') === 'cross-site') return false
   // Origin fence: when a browser attaches an Origin it must be exactly this
-  // authority (compared through the same normalization as the Host). Absent
-  // Origin is fine — the Host fence above already bound the request. The
-  // literal "null" (sandboxed iframes, file: pages) is an opaque origin, refused.
+  // authority (compared through the same normalization as the Host) or a
+  // deployment-declared origin. Absent Origin is fine — the Host fence above
+  // already bound the request. The literal "null" (sandboxed iframes, file:
+  // pages) is an opaque origin, refused.
   const origin = header(request.headers, 'origin')
   if (origin === undefined) return true
+  if (isTrustedOrigin(origin, trustedOrigins)) return true
   try {
     return new URL(origin).host === hostUrl.host
   } catch {

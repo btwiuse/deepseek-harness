@@ -1,7 +1,7 @@
 /** Behavior of the /api browser-trust fence (rebinding + cross-site defense). */
 
 import { describe, expect, it } from 'vitest'
-import { assertTrustedAuthority, isTrustedApiRequest } from '../src/api-request-trust.ts'
+import { assertTrustedAuthority, assertTrustedOrigin, isTrustedApiRequest } from '../src/api-request-trust.ts'
 
 function request(headers: Record<string, string | undefined>): { headers: Record<string, string | undefined> } {
   return { headers }
@@ -104,5 +104,61 @@ describe('isTrustedApiRequest', () => {
     expect(isTrustedApiRequest(request({ ...markers, host: 'bad host' }), [])).toBe(false)
     expect(isTrustedApiRequest(request({ ...markers, host: '127.0.0.999' }), [])).toBe(false)
     expect(isTrustedApiRequest(request({ ...markers, host: '128.0.0.1' }), [])).toBe(false)
+  })
+
+  it('accepts a declared origin when the request Host was rewritten to loopback by a reverse tunnel', () => {
+    const origins = ['https://app.example']
+    // The tunnel rewrites Host to loopback; the browser still sends its real
+    // origin. Without the declaration the Origin fence compares origin against
+    // the loopback Host and refuses; with it, the request passes.
+    const headers = {
+      host: '127.0.0.1:8090',
+      origin: 'https://app.example',
+      'sec-fetch-site': 'same-origin',
+    }
+    expect(isTrustedApiRequest(request(headers), [])).toBe(false)
+    expect(isTrustedApiRequest(request(headers), [], origins)).toBe(true)
+    // The declaration is per-origin: a different scheme, port, or host still
+    // refuses.
+    expect(isTrustedApiRequest(request({ ...headers, origin: 'http://app.example' }), [], origins)).toBe(false)
+    expect(isTrustedApiRequest(request({ ...headers, origin: 'https://app.example:8443' }), [], origins)).toBe(false)
+    expect(isTrustedApiRequest(request({ ...headers, origin: 'https://other.example' }), [], origins)).toBe(false)
+    // An unparsable or opaque origin never matches a declared one.
+    expect(isTrustedApiRequest(request({ ...headers, origin: 'null' }), [], origins)).toBe(false)
+    expect(isTrustedApiRequest(request({ ...headers, origin: 'not a url' }), [], origins)).toBe(false)
+    // Entries normalize through URL.origin: scheme, host case, and a redundant
+    // default port never decide trust.
+    expect(isTrustedApiRequest(request({ ...headers, origin: 'https://APP.example' }), [], ['https://app.example'])).toBe(true)
+  })
+
+  it('keeps the declared origin under the Host fence — it never authorizes a foreign Host', () => {
+    // The origin allowlist only relaxes the Origin comparison; the Host fence
+    // still binds the request, so an attacker Host with a declared origin is
+    // refused exactly as before.
+    const headers = {
+      host: 'evil.example:8090',
+      origin: 'https://app.example',
+      'sec-fetch-site': 'same-origin',
+    }
+    expect(isTrustedApiRequest(request(headers), [], ['https://app.example'])).toBe(false)
+    // Cross-site markers are refused regardless of the declared origin.
+    expect(isTrustedApiRequest(request({ ...headers, host: '127.0.0.1:8090', 'sec-fetch-site': 'cross-site' }), [], ['https://app.example'])).toBe(false)
+  })
+
+  it('assertTrustedOrigin accepts canonical absolute origins and throws on anything else', () => {
+    for (const entry of ['https://app.example', 'https://app.example:8443', 'http://app.internal', 'http://10.0.0.9', 'https://[::1]:3080']) {
+      expect(() => { assertTrustedOrigin(entry) }).not.toThrow()
+    }
+    // A path, query, fragment, userinfo, missing scheme, non-http(s) scheme,
+    // uppercase host, redundant default port, and whitespace are all refused:
+    // WHATWG normalization would silently rewrite each into a different grant.
+    for (const entry of [
+      'https://app.example/path', 'https://app.example?x', 'https://app.example#f',
+      'user@https://app.example', 'https://user@app.example',
+      'app.example', '//app.example', 'ftp://app.example',
+      'https://APP.example', 'https://app.example:443', ' https://app.example',
+    ]) {
+      expect(() => { assertTrustedOrigin(entry) }).toThrow(/not an absolute http\(s\) origin/)
+    }
   })
 })

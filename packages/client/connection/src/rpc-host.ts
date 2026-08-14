@@ -47,8 +47,15 @@ export class HostConnectionService extends Service implements HostConnectionHand
    * Provide the Host half over the active HTTP server.
    * @param ctx - owning Connection plugin context.
    * @param trustedHosts - deployment authorities accepted by trusted-host channels.
+   * @param trustedOrigins - deployment origins whose proxied browser requests pass the Origin fence.
+   * @param dev - when true, every browser-trust fence is disabled for this process.
    */
-  constructor(ctx: Context, private readonly trustedHosts: readonly string[]) {
+  constructor(
+    ctx: Context,
+    private readonly trustedHosts: readonly string[],
+    private readonly trustedOrigins: readonly string[] = [],
+    private readonly dev = false,
+  ) {
     super(ctx, 'connection')
   }
 
@@ -79,7 +86,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
         if (endpoint === undefined || interceptor === undefined || !interceptor.matches(endpoint)) {
           return fallback.fetch(request)
         }
-        if (interceptor.options.authority === 'loopback' && !isTrustedApiRequest(request, [])) {
+        if (!this.dev && interceptor.options.authority === 'loopback' && !isTrustedApiRequest(request, [], this.trustedOrigins)) {
           return Promise.resolve(new Response('forbidden', { status: 403 }))
         }
         return interceptor.fetchHandler.fetch(request)
@@ -100,7 +107,7 @@ export class HostConnectionService extends Service implements HostConnectionHand
       kind: 'prefix',
       path: channel,
       handler: async (req, res) => {
-        if (!isTrustedApiRequest(req, trustedHosts)) {
+        if (!this.dev && !isTrustedApiRequest(req, trustedHosts, this.trustedOrigins)) {
           res.writeHead(403)
           res.end('forbidden')
           return

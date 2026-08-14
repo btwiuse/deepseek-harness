@@ -405,6 +405,22 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Absolute origins (`https://host[:port]`) whose browser requests may pass
+   * the Origin fence even when the request Host is not the same authority —
+   * the serving shape of a reverse tunnel that rewrites Host to loopback,
+   * where the Host fence already bound the socket and the deployment declares
+   * exactly which page origin it fronts. An entry that is not a canonical
+   * absolute http(s) origin fails the plugin load.
+   */
+  trustedOrigins?: string[]
+  /**
+   * Disable every /api browser-trust fence (Host, cross-site, Origin, and the
+   * privileged loopback pin) for this process. Development convenience for a
+   * fronted server whose proxy handles the browser side; never for a
+   * deployment reachable by anyone the proxy does not vouch for.
+   */
+  dev?: boolean
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
 }
@@ -2884,6 +2900,10 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Explicit `--trusted-origin` origins from this invocation. */
+  trustedOrigins: string[]
+  /** `--dev`: disable every /api browser-trust fence for this process. */
+  dev: boolean
 }
 ```
 

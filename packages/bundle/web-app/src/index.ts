@@ -47,12 +47,18 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Explicit `--trusted-origin` origins from this invocation. */
+  trustedOrigins: string[]
+  /** `--dev`: disable every /api browser-trust fence for this process. */
+  dev: boolean
 }
 
 export const Config: z<Config> = z.object({
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
+  trustedOrigins: z.array(String).default([]),
+  dev: z.boolean().default(false),
 })
 
 /** Bind-dependent Web values shared by the trust fence and URL display. */
@@ -61,6 +67,10 @@ export interface WebRuntimeValues {
   lanAddresses: string[]
   /** LAN literals followed by explicit invocation authorities. */
   trustedHosts: string[]
+  /** Explicit invocation origins, passed through to the /api Origin fence. */
+  trustedOrigins: string[]
+  /** `--dev`: passed through so the /api fence row can disable itself. */
+  dev: boolean
 }
 
 /** Environment variable naming the canonical local URL of this Web GUI. */
@@ -77,18 +87,25 @@ const ALL_INTERFACES_HOST = '0.0.0.0'
  *
  * Derived entries are port-less IP literals: DNS rebinding needs an
  * attacker-controlled name, while an IP-literal Host is safe on any port and
- * an OS-assigned port is unknowable before bind.
+ * an OS-assigned port is unknowable before bind. Explicit origins pass through
+ * untouched — the Origin fence compares them against the browser's Origin
+ * header, which never carries a path.
  * @param bindHost - the active webserver bind host.
- * @param extra - explicit `--trusted-host` values, in argument order.
- * @returns the LAN display addresses and invocation-derived fence authorities.
+ * @param extraHosts - explicit `--trusted-host` values, in argument order.
+ * @param extraOrigins - explicit `--trusted-origin` values, in argument order.
+ * @returns the LAN display addresses, invocation-derived fence authorities, and declared origins.
  */
-export function resolveLanTrust(bindHost: string, extra: readonly string[]): WebRuntimeValues {
+export function resolveLanTrust(
+  bindHost: string,
+  extraHosts: readonly string[],
+  extraOrigins: readonly string[] = [],
+): Omit<WebRuntimeValues, 'dev'> {
   const lanAddresses = bindHost === ALL_INTERFACES_HOST
     ? Object.values(networkInterfaces()).flat()
       .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
       .map(iface => iface.address)
     : []
-  return { lanAddresses, trustedHosts: [...lanAddresses, ...extra] }
+  return { lanAddresses, trustedHosts: [...lanAddresses, ...extraHosts], trustedOrigins: [...extraOrigins] }
 }
 
 /** Model-visible orientation and acceptance boundary for sessions created through `dsh web`. */
@@ -133,7 +150,13 @@ export const internals: { resolveDistIndex: () => string } = { resolveDistIndex 
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
-  const runtime = resolveLanTrust(ctx.webServer.host, config.trustedHosts)
+  const runtime: WebRuntimeValues = {
+    ...resolveLanTrust(ctx.webServer.host, config.trustedHosts, config.trustedOrigins),
+    dev: config.dev,
+  }
+  if (config.dev) {
+    ctx.logger.warn('web: --dev is active; every /api browser-trust fence is disabled for this process')
+  }
   // Release dependent rows only after bind-dependent trust has been sampled once.
   ctx.provide(WEB_RUNTIME_SERVICE, runtime)
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })

@@ -7,7 +7,7 @@ import type { WebRoute, WebUpgradeRoute } from '@deepseek-ai/dsh-host-webserver'
 import { toFetchHandler } from '@deepseek-ai/dsh-host-apiproxy'
 import { API_PATH, HOST_EVENTS_PATH, MUX_EVENTS_PATH } from './api-path.ts'
 import { bridge, DEFAULT_MAX_REQUEST_BODY_BYTES } from './http-bridge.ts'
-import { assertTrustedAuthority, isTrustedApiRequest } from './api-request-trust.ts'
+import { assertTrustedAuthority, assertTrustedOrigin, isTrustedApiRequest } from './api-request-trust.ts'
 import { HostConnectionService } from './rpc-host.ts'
 import { rejectWebSocketUpgrade, WebSocketDownlinks } from './websocket-downlink.ts'
 
@@ -57,12 +57,30 @@ export interface ConnectionConfig {
    * that is not a bare, canonical authority fails the plugin load.
    */
   trustedHosts?: string[]
+  /**
+   * Absolute origins (`https://host[:port]`) whose browser requests may pass
+   * the Origin fence even when the request Host is not the same authority —
+   * the serving shape of a reverse tunnel that rewrites Host to loopback,
+   * where the Host fence already bound the socket and the deployment declares
+   * exactly which page origin it fronts. An entry that is not a canonical
+   * absolute http(s) origin fails the plugin load.
+   */
+  trustedOrigins?: string[]
+  /**
+   * Disable every /api browser-trust fence (Host, cross-site, Origin, and the
+   * privileged loopback pin) for this process. Development convenience for a
+   * fronted server whose proxy handles the browser side; never for a
+   * deployment reachable by anyone the proxy does not vouch for.
+   */
+  dev?: boolean
   /** Maximum buffered JSON body for every `/api` request. */
   maxRequestBodyBytes?: number
 }
 
 export const Config: z<ConnectionConfig> = z.object({
   trustedHosts: z.array(String).default([]),
+  trustedOrigins: z.array(String).default([]),
+  dev: z.boolean().default(false),
   maxRequestBodyBytes: z.natural().min(1).default(DEFAULT_MAX_REQUEST_BODY_BYTES),
 })
 
@@ -130,21 +148,25 @@ const PRIVILEGED_METHODS = new Set([
 export function apply(ctx: Context, config?: ConnectionConfig): void {
   // The Loader resolves schema defaults; hand-built test contexts may pass none.
   const trustedHosts = config?.trustedHosts ?? []
+  const trustedOrigins = config?.trustedOrigins ?? []
+  const dev = config?.dev ?? false
   const maxRequestBodyBytes = config?.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   // Config boundary: a malformed entry fails the load loudly here rather than
-  // silently authorizing its hostname prefix at request time.
+  // silently authorizing its hostname prefix or origin at request time.
   for (const entry of trustedHosts) assertTrustedAuthority(entry)
+  for (const entry of trustedOrigins) assertTrustedOrigin(entry)
   if (ctx.get('apiProxy') !== undefined) assertImageBodyCapacity(ctx, maxRequestBodyBytes)
-  const connection = new HostConnectionService(ctx, trustedHosts)
+  const connection = new HostConnectionService(ctx, trustedHosts, trustedOrigins, dev)
   const fetchHandler = connection.createSharedFetchHandler(API_PATH, {
     async fetch(request) {
       const pathname = new URL(request.url).pathname
       const method = pathname.startsWith(`${API_PATH}/`)
         ? pathname.slice(API_PATH.length + 1)
         : undefined
-      if (method !== undefined
+      if (!dev
+        && method !== undefined
         && PRIVILEGED_METHODS.has(method)
-        && !isTrustedApiRequest(request, [])) {
+        && !isTrustedApiRequest(request, [], trustedOrigins)) {
         return new Response('forbidden', { status: 403 })
       }
       if (request.method === 'GET' && (pathname === MUX_EVENTS_PATH || pathname === HOST_EVENTS_PATH)) {
@@ -162,7 +184,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
     kind: 'prefix',
     path: API_PATH,
     handler: async (req, res) => {
-      if (!isTrustedApiRequest(req, trustedHosts)) {
+      if (!dev && !isTrustedApiRequest(req, trustedHosts, trustedOrigins)) {
         res.writeHead(403)
         res.end('forbidden')
         return
@@ -181,7 +203,7 @@ export function apply(ctx: Context, config?: ConnectionConfig): void {
       apiCtx.effect(() => apiCtx.webServer.registerUpgrade({
         path,
         handler: (req, socket, head) => {
-          if (!isTrustedApiRequest(req, trustedHosts)) {
+          if (!dev && !isTrustedApiRequest(req, trustedHosts, trustedOrigins)) {
             rejectWebSocketUpgrade(socket)
             return
           }

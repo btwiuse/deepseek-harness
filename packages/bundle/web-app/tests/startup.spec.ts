@@ -58,6 +58,8 @@ export const apply = ctx => globalThis.__webStartupApply(ctx)
     "    host: !!js ctx.webStartup.host ?? '127.0.0.1'",
     '    port: !!js ctx.webStartup.port ?? 3080',
     '    trustedHosts: !!js ctx.webStartup.trustedHosts',
+    '    trustedOrigins: !!js ctx.webStartup.trustedOrigins ?? []',
+    '    dev: !!js ctx.webStartup.dev ?? false',
     '- id: provider',
     `  name: ${pathToFileURL(join(dir, 'provider.mjs')).href}`,
     '',
@@ -92,11 +94,15 @@ describe('web command-line provider', () => {
       '--port', '8080',
       '--trusted-host', 'lab.internal', 'lab-2.internal',
       '--trusted-host', '10.0.0.9',
+      '--trusted-origin', 'https://app.example',
+      '--dev',
     ])
     expect(values).toEqual({
       host: '127.0.0.1',
       port: 8080,
       trustedHosts: ['lab.internal', 'lab-2.internal', '10.0.0.9'],
+      trustedOrigins: ['https://app.example'],
+      dev: true,
     })
     expect(observed.readerConfig).toEqual(values)
     expect(observed.exits).toEqual([])
@@ -104,11 +110,13 @@ describe('web command-line provider', () => {
 
   it('leaves deployment values to each consumer when flags omit them', async () => {
     const { values, observed } = await bootProvider([])
-    expect(values).toEqual({ trustedHosts: [] })
+    expect(values).toEqual({ trustedHosts: [], trustedOrigins: [], dev: false })
     expect(observed.readerConfig).toEqual({
       host: '127.0.0.1',
       port: 3080,
       trustedHosts: [],
+      trustedOrigins: [],
+      dev: false,
     })
   })
 
@@ -116,6 +124,8 @@ describe('web command-line provider', () => {
     const { values, observed } = await bootProvider(['--help'])
     expect(observed.out).toContain('dsh --profile web')
     expect(observed.out).toContain('--trusted-host')
+    expect(observed.out).toContain('--trusted-origin')
+    expect(observed.out).toContain('--dev')
     expect(values).toBeUndefined()
     expect(observed.readerConfig).toBeUndefined()
     expect(observed.exits).toEqual([0])

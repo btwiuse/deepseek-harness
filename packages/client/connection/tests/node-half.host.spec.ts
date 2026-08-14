@@ -74,7 +74,7 @@ function fakeResponse(): { response: ServerResponse; state: { status?: number; b
   return { response, state }
 }
 
-async function mounted(config?: { trustedHosts?: string[] }): Promise<{
+async function mounted(config?: { trustedHosts?: string[]; trustedOrigins?: string[]; dev?: boolean }): Promise<{
   routes: WebRoute[]
   upgrades: WebUpgradeRoute[]
   dispose: () => Promise<void>
@@ -111,6 +111,18 @@ describe('connection node half', () => {
     ctx.provide('apiProxy', {} as unknown as ApiProxy)
     const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedHosts: ['harness.internal/path'] })
     await expect(fiber).rejects.toThrow(/not a bare host\[:port\] authority/)
+    expect(routes).toHaveLength(0)
+    expect(upgrades).toHaveLength(0)
+  })
+
+  it('fails the load on a trustedOrigins entry that is not a canonical absolute origin', async () => {
+    const routes: WebRoute[] = []
+    const upgrades: WebUpgradeRoute[] = []
+    const ctx = new Context()
+    ctx.provide('webServer', fakeHttpServer(routes, upgrades) as WebServer)
+    ctx.provide('apiProxy', {} as unknown as ApiProxy)
+    const fiber = ctx.plugin({ inject: [...inject], apply }, { trustedOrigins: ['app.example/path'] })
+    await expect(fiber).rejects.toThrow(/not an absolute http\(s\) origin/)
     expect(routes).toHaveLength(0)
     expect(upgrades).toHaveLength(0)
   })
@@ -190,6 +202,64 @@ describe('connection node half', () => {
     await routes[0]!.handler(fakeRequest({ host: 'harness.example' }), read.response)
     expect(read.state.status).not.toBe(403)
     await dispose()
+  })
+
+  it('lets a declared origin reach privileged methods when a tunnel rewrites Host to loopback', async () => {
+    const { routes, dispose } = await mounted({ trustedOrigins: ['https://app.example'] })
+    // Reverse-tunnel shape: the browser page lives at the declared origin, the
+    // tunnel forwards with a loopback Host, and the browser marks the fetch
+    // same-origin. The declaration lets the privileged check pass; the empty
+    // proxy answers 404 at the carrier level, proving the fence did not stop it.
+    const markers = { host: '127.0.0.1:8090', origin: 'https://app.example', 'sec-fetch-site': 'same-origin' }
+    for (const method of ['settings.describe', 'credentials.describe', 'llm.discoverModels', 'host.pickDirectory']) {
+      const passed = fakeResponse()
+      await routes[0]!.handler(fakeRequest(markers, `${API_PATH}/${method}`), passed.response)
+      expect(passed.state.status).toBe(404)
+    }
+    // The same origin without a loopback Host stays refused — the Host fence
+    // is unchanged.
+    const denied = fakeResponse()
+    await routes[0]!.handler(fakeRequest(
+      { host: 'other.example', origin: 'https://app.example', 'sec-fetch-site': 'same-origin' },
+      `${API_PATH}/settings.describe`,
+    ), denied.response)
+    expect(denied.state.status).toBe(403)
+    await dispose()
+    // Without the declaration the same tunnel shape stays refused.
+    const strict = await mounted()
+    const unconfigured = fakeResponse()
+    await strict.routes[0]!.handler(fakeRequest(markers, `${API_PATH}/settings.describe`), unconfigured.response)
+    expect(unconfigured.state.status).toBe(403)
+    await strict.dispose()
+  })
+
+  it('--dev bypasses every fence: foreign Hosts, cross-site markers, and the privileged pin', async () => {
+    const { routes, dispose } = await mounted({ dev: true })
+    // A foreign Host with a cross-site marker reaches the bridge (404 from the
+    // empty proxy) instead of 403.
+    const foreign = fakeResponse()
+    await routes[0]!.handler(fakeRequest(
+      { host: 'evil.example', origin: 'http://evil.example', 'sec-fetch-site': 'cross-site' },
+      `${API_PATH}/session.list`,
+    ), foreign.response)
+    expect(foreign.state.status).toBe(404)
+    // Privileged methods pass too, on any Host.
+    const privileged = fakeResponse()
+    await routes[0]!.handler(fakeRequest(
+      { host: 'evil.example', origin: 'http://evil.example', 'sec-fetch-site': 'cross-site' },
+      `${API_PATH}/settings.describe`,
+    ), privileged.response)
+    expect(privileged.state.status).toBe(404)
+    await dispose()
+    // Without --dev the same requests stay refused.
+    const strict = await mounted()
+    const denied = fakeResponse()
+    await strict.routes[0]!.handler(fakeRequest(
+      { host: 'evil.example', origin: 'http://evil.example', 'sec-fetch-site': 'cross-site' },
+      `${API_PATH}/settings.describe`,
+    ), denied.response)
+    expect(denied.state.status).toBe(403)
+    await strict.dispose()
   })
 
   it('passes loopback and declared-authority requests through to the bridge', async () => {
