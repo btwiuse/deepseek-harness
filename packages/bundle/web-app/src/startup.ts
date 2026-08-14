@@ -54,7 +54,7 @@ function webCommand(): Command {
     .name('dsh --profile web')
     .description('Serve the DeepSeek Harness browser UI.')
     .helpOption('-h, --help', 'show this help')
-    .option('--host <host>', 'bind host')
+    .option('--host <host>', 'bind host (127.0.0.1 or 0.0.0.0)')
     .option('--port <port>', 'listen port; falls back to $PORT, then 3080; pass 0 to let the OS pick a free one')
     .option('--trusted-host <authority...>', 'extra authority the /api browser-trust fence accepts (host or host:port; repeatable)')
     .option('--trusted-origin <origin...>', 'extra absolute origin the /api Origin fence accepts (scheme://host[:port]; repeatable)')
@@ -65,25 +65,24 @@ Examples:
   dsh --profile web --port 8080              serve on another port
   dsh --profile web --trusted-origin https://app.example --trusted-host app.example
                                              serve behind a reverse tunnel fronting app.example
+  dsh --profile web --host 0.0.0.0 --dev     serve on every interface for a proxy-fronted deployment
   dsh --profile web --dev                    serve with all /api browser-trust fences off (local development)
 `)
 }
 
 /**
  * Parse and provide the Web invocation as an ordinary Cordis service. The
- * command's action publishes the flags this invocation named; `--host 0.0.0.0`
- * or a non-numeric `--port` (or `$PORT`, which supplies the default when the
- * flag is absent) is a usage error, so on rejection (and on `--help`)
- * nothing is provided.
+ * command's action publishes the flags this invocation named; a non-numeric
+ * `--port` (or `$PORT`, which supplies the default when the flag is absent)
+ * is a usage error, so on rejection (and on `--help`) nothing is provided.
+ * `--host 0.0.0.0` binds every interface, for proxy-fronted deployments; the
+ * /api browser-trust fences still gate access unless `--dev` disables them.
  * @param ctx - plugin context carrying the command line.
  */
 export function apply(ctx: Context): void {
   const program = webCommand()
   program.action(() => {
     const options = program.opts<WebOptions>()
-    if (options.host === '0.0.0.0') {
-      program.error('error: --host 0.0.0.0 is intentionally not supported yet for safety: it would expose remote code execution to the network; use 127.0.0.1 instead')
-    }
     if (options.port !== undefined && !/^\d+$/.test(options.port)) {
       program.error(`error: --port must be a number, got ${JSON.stringify(options.port)}`)
     }

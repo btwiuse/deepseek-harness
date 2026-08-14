@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { Browser, Page } from 'playwright'
@@ -177,6 +177,46 @@ describe('dsh web keyless CLI smoke', () => {
       const readyUrl = await waitForReadyLine(child)
       expect(readyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
       expect((await fetch(readyUrl)).status).toBe(200)
+    } finally {
+      const closed = child.exitCode === null
+        ? new Promise<void>((resolveClose) => { child.once('close', () => { resolveClose() }) })
+        : Promise.resolve()
+      if (child.exitCode === null) child.kill('SIGTERM')
+      await closed
+      rmSync(sessionsDir, { recursive: true, force: true })
+    }
+  })
+
+  it('binds 0.0.0.0 and serves on the machine LAN address when --host 0.0.0.0', async () => {
+    requireDist()
+    const lanAddresses = Object.values(networkInterfaces()).flat()
+      .filter((iface): iface is NonNullable<typeof iface> => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
+      .map(iface => iface.address)
+    // Without a routable IPv4 there is nothing to distinguish 0.0.0.0 from
+    // loopback on this host; the loopback fetch below still proves the bind.
+    if (lanAddresses.length === 0) return
+    const sessionsDir = mkdtempSync(join(tmpdir(), 'dsh-web-wildcard-'))
+    const tsxLoader = pathToFileURL(createRequire(join(REPO_ROOT, 'package.json')).resolve('tsx')).href
+    const child = spawn(
+      process.execPath,
+      ['--import', tsxLoader, join(REPO_ROOT, 'apps/cli/src/bin.ts'), 'web', '--host', '0.0.0.0', '--port', '0'],
+      {
+        cwd: sessionsDir,
+        env: {
+          ...process.env,
+          DEEPSEEK_API_KEY: 'keyless-web-wildcard',
+          DSH_HOME: join(sessionsDir, '.dsh'),
+          DSH_AGENTS_HOME: join(sessionsDir, '.agents'),
+          TSX_TSCONFIG_PATH: join(REPO_ROOT, 'tsconfig.json'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    )
+    try {
+      const readyUrl = await waitForReadyLine(child)
+      const port = new URL(readyUrl).port
+      expect((await fetch(`http://127.0.0.1:${port}/`)).status).toBe(200)
+      expect((await fetch(`http://${lanAddresses[0]}:${port}/`)).status).toBe(200)
     } finally {
       const closed = child.exitCode === null
         ? new Promise<void>((resolveClose) => { child.once('close', () => { resolveClose() }) })
