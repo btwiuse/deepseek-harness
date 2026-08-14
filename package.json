@@ -14,7 +14,8 @@
     "native/landlock-run",
     "native/landlock-run/packages/*",
     "apps/*",
-    "website"
+    "website",
+    "examples"
   ],
   "scripts": {
     "build": "npm run build:lib && npm run build:web",
